@@ -9,8 +9,10 @@ other references:
 # updated: 2022-06-18
 
 import os
+import time
 import logging
 import logging.config
+from datetime import datetime
 from urllib.request import urlopen
 import concurrent.futures as cute
 
@@ -74,31 +76,21 @@ urls = ['https://docs.python.org/3/library/concurrency.html',
         'https://docs.python.org/3/library/contextvars.html']
 
 
-def _example_with_yield_in_main_thread():
-    '''
-    example of how to call the parent function and access the results.
-    without the log statement, this could be a list comprehension:
-
-    futes = fute for fute in submit_wait_as_completed(urls)
-    '''
-    futes = []
-    for fute in submit_wait_as_completed(urls):
-        logger.info('found a fute')
-        futes.append(fute)
-
-
-def _download_and_return(url):
+def download_and_return(url):
+    '''download data from URL and return it'''
     try:
         logger.info(f'opening connection to {url}')
         with urlopen(url, timeout=3) as connection:
-            return (connection.read(), url)
+            bundle = (connection.read(), url)
+            logger.info(f'successfully read data from {url}')
+            return bundle
     except Exception:
         logger.exception(f'exception thrown when trying to access {url}')
         return (None, url)
 
 
-def _download_and_write(url):
-    '''download data from URL and write it out to disk'''
+def download_and_write(url, writepath=writepath):
+    '''download data from URL and write it to disk'''
     writepath = os.path.join('output', 'urls')  # filepath for writing files
     with urlopen(url, timeout=3) as connection:
         data = connection.read()
@@ -113,17 +105,27 @@ def _download_and_write(url):
         return (url, outpath)
 
 
-def submit_no_wait(urls, writepath):
+def nap_and_dream(nappp, dreamabout):
+    dreams = os.path.basename(dreamabout)
+    napper = logging.getLogger(dreams)
+    napper.info(f"oh it's {datetime.now().time()}, time for a nap")
+    time.sleep(nappp)
+    napper.info(f'i was out for {nappp} seconds, dreaming about {dreams}')
+    napper.info(f"now it's {datetime.now().time()}")
+    return nappp, dreams
+
+
+def submit_no_wait(func=download_and_write, params=urls):
     '''
     submit individual threads for each task via a list comprehension.
     this executes the tasks concurrently, and returns the the futures immediately.
     futures are discarded with assignment to '_' throwaway variable.
     '''
-    with cute.ThreadPoolExecutor(max_workers=len(urls)) as executor:
-        _ = [executor.submit(_download_and_write, url, writepath) for url in urls]
+    with cute.ThreadPoolExecutor(max_workers=len(params)) as executor:
+        _ = [executor.submit(func, param) for param in params]
 
 
-def submit_wait_all_completed(urls, writepath, timeout=None, condition=cute.ALL_COMPLETED):
+def submit_wait_all_completed(func=download_and_write, params=urls, timeout=None, condition=cute.ALL_COMPLETED):
     '''
     submit individual threads for each task via a list comprehension.
     this executes the tasks concurrently, and returns the the futures immediately.
@@ -155,12 +157,12 @@ def submit_wait_all_completed(urls, writepath, timeout=None, condition=cute.ALL_
                    defaults to concurrent.futures.ALL_COMPLETED. the other two
                    available constants are FIRST_COMPLETED and FIRST_EXCEPTION.
     '''
-    with cute.ThreadPoolExecutor(max_workers=len(urls)) as executor:
-        futures = [executor.submit(_download_and_write, url, writepath) for url in urls]
+    with cute.ThreadPoolExecutor(max_workers=len(params)) as executor:
+        futures = [executor.submit(func, param) for param in params]
         _, _ = cute.wait(futures, timeout=timeout, return_when=condition)
 
 
-def submit_wait_as_completed(urls):
+def submit_wait_as_completed(func=download_and_return, params=urls):
     '''
     submit tasks (download a list of urls) to a ThreadPoolExecutor to be executed
     concurrently. iterate over concurrent.futures.as_completed() to get results
@@ -171,11 +173,11 @@ def submit_wait_as_completed(urls):
     the yield is optional; easier to loop over this as a generator than copy/paste
     the body of the entire function. idk if it's best practice, or if it matters or not.
     '''
-    with cute.ThreadPoolExecutor(max_workers=len(urls)) as executor:
-        logger.info(f'submitting {len(urls)} tasks to ThreadPoolExecutor')
-        futures = [executor.submit(_download_and_return, url) for url in urls]
-        logger.info(f'received {len(futures)} future objects after submission to the pool')
+    with cute.ThreadPoolExecutor(max_workers=len(params)) as executor:
+        logger.info(f'submitting {len(params)} tasks to pool')
+        futures = [executor.submit(func, param) for param in params]
 
+        # process results... this would change depending on the pool's target func + params
         for future in cute.as_completed(futures):
             data, url = future.result()
             if data is None:
@@ -187,24 +189,50 @@ def submit_wait_as_completed(urls):
             yield future
 
 
-def map_w_result(urls):
+def submit_get_sequentially(func=download_and_return, params=urls):
+    '''
+    instead of using as_completed() to grab results from whatever thread is done
+    first, retrieve results sequentially, in the order that the threads were
+    submitted to the pool.
+
+    similar to the outcome of ThreadPoolExecutor.map()
+    '''
+    with cute.ThreadPoolExecutor() as executor:
+        futures = [executor.submit(func, params) for param in params]
+
+    # process results sequentially, as the futures iterable is ordered
+    # based on the call to submit()
+    for future in futures:
+        logger.info(f'future state: {future.state()}')
+
+
+def map_w_result(func=download_and_write, params=urls):
     '''
     ThreadPoolExecutor.map() submits all the tasks to the pool simultaneously...
     in this way it is similar to the submit() usage patterns; however when iterated
     over, it returns a result (if any) instead of a future object.
 
-    NOTE: difference between executor.map() and the python builtin map(), is the
-    builtin evaluates each call one-by-one during iteration ("lazy-evaluation"),
-    whereas executor.map() launches them to run concurrently. this means
-    that executor.map() will issue and execute all provided tasks regardless of
-    whether the results are iterated over or not. see the final example here:
+    NOTE: executor.map() executes the parameterized calls to the target function
+    asyncronously and concurrently (if enough threads/resources are available);
+    as a consquence, all the specified tasks will be executed regardless of whether
+    the iterator returned by executor.map() is iterated over or not. this is different
+    than python's builtin map(), as the builtin evaluates each task one-by-one during
+    iteration ("lazy-evaluation").
+    see the examples in this section for reference:
     https://superfastpython.com/threadpoolexecutor-in-python/#Map_and_Wait_Pattern
 
-    executor.map() differs from the submit()/wait() usage patterns in that it
-    returns the results sequentially in the order the tasks were sent to the pool.
+    executor.map() differs from most submit()/wait() usage patterns in that it
+    returns results sequentially in the order of the parameters in the iterator(s)
+    that populate the call to the target function.
+
+    @timeout: int, float, or None. specifies the length of the timeout in seconds.
+              during iteration over the call to executor.map(), if a result isn't available
+              after the timeout, a concurrent.futures.TimeoutError is raised. the
+              countdown starts with the original call to executor.map(). if not
+              specified or None, there is no limit to how long to wait for results.
     '''
     with cute.ThreadPoolExecutor() as executor:
-        for result in executor.map(_download_and_write, urls):
+        for result in executor.map(func, params, timeout=None):
             if None in result:
                 logger.error(f'error occurred when executing target function for {result[0]}')
             else:
@@ -212,6 +240,33 @@ def map_w_result(urls):
             yield result
 
 
+def submit_w_callbacks(func=nap_and_dream, params=urls):
+    '''
+    add callbacks onto the tasks after they are submitted. possible to add more than
+    one callback; they'll be called in the order they're registered. the callbacks
+    are executed on a future when it completes, original order is irrelevant
+    '''
+    callog = logging.getLogger('callog')
+
+    def callback(fute):
+        callog.info(f'callback: {fute.result()[0]}')
+
+    def callbackk(fute):
+        callog.info(f'callback: {fute.result()[1]}')
+
+    # make params for target func with enumerate, but reverse the count
+    # so the first thread submitted sleeps the longest
+    naps = [i+1 for i in range(len(params))]
+    naps.reverse()
+    napdreams = [(naptime, url) for naptime, url in zip(naps, params)]
+
+    with cute.ThreadPoolExecutor(max_workers=10) as executor:
+        futures = [executor.submit(func, *napdream) for napdream in napdreams]
+        # register the callbacks on all tasks
+        for future in futures:
+            future.add_done_callback(callback)
+            future.add_done_callback(callbackk)
+
+
 if __name__ == '__main__':
-    for r in map_w_result(urls):
-        logger.info(f'received from map_w_result(): {r}')
+    submit_w_callbacks()
