@@ -5,6 +5,12 @@ other references:
   - https://stackoverflow.com/a/58829816
   - https://realpython.com/python-deque/#sharing-data-between-threads
   - https://alexandra-zaharia.github.io/posts/how-to-stop-a-python-thread-cleanly/#by-default-the-thread-is-not-stopped-cleanly
+
+NOTE: using the context manager with ThreadPoolExecutor will shutdown the Executor
+      "waiting as if Executor.shutdown() were called with @wait set to True", aka
+      the with statement won't be exited until all pending futures have completed
+      and their resources have been freed. reference:
+      https://docs.python.org/3/library/concurrent.futures.html#concurrent.futures.Executor.shutdown
 '''
 # updated: 2022-06-18
 
@@ -118,21 +124,18 @@ def nap_and_dream(nappp, dreamabout):
 def submit_no_wait(func=download_and_write, params=urls):
     '''
     submit individual threads for each task via a list comprehension.
-    this executes the tasks concurrently, and returns the the futures immediately.
+    this executes the tasks concurrently, and returns the futures immediately.
     futures are discarded with assignment to '_' throwaway variable.
     '''
     with cute.ThreadPoolExecutor(max_workers=len(params)) as executor:
         _ = [executor.submit(func, param) for param in params]
 
 
-def submit_wait_all_completed(func=download_and_write, params=urls, timeout=None, condition=cute.ALL_COMPLETED):
+def submit_wait_for_condition(func=download_and_write, params=urls, timeout=None, condition=cute.ALL_COMPLETED):
     '''
     submit individual threads for each task via a list comprehension.
-    this executes the tasks concurrently, and returns the the futures immediately.
-    here the list of futures returned by each submit() are captured, and then waited
-    upon. however the results of the call to wait() are discarded... this means
-    the wait is only useful if blocking the calling thread until the condition
-    specified by wait()'s '@return__when kwarg is satisfied.
+    executes the tasks concurrently, and returns the the futures immediately.
+    the list of futures returned by each submit() are captured, and then waited upon.
 
     @timeout:      represents wait()'s optional @timeout kwarg. accepts int, float, or None.
                    if not specified, or set to None, then no timeout is implemented,
@@ -159,7 +162,7 @@ def submit_wait_all_completed(func=download_and_write, params=urls, timeout=None
     '''
     with cute.ThreadPoolExecutor(max_workers=len(params)) as executor:
         futures = [executor.submit(func, param) for param in params]
-        _, _ = cute.wait(futures, timeout=timeout, return_when=condition)
+        done, not_done = cute.wait(futures, timeout=timeout, return_when=condition)
 
 
 def submit_wait_as_completed(func=download_and_return, params=urls):
@@ -200,10 +203,10 @@ def submit_get_sequentially(func=download_and_return, params=urls):
     with cute.ThreadPoolExecutor() as executor:
         futures = [executor.submit(func, params) for param in params]
 
-    # process results sequentially, as the futures iterable is ordered
-    # based on the call to submit()
-    for future in futures:
-        logger.info(f'future state: {future.state()}')
+        # process results sequentially, as the futures iterable is ordered
+        # based on the call to submit()
+        for future in futures:
+            logger.info(f'future state: {future.state()}')
 
 
 def map_w_result(func=download_and_write, params=urls):
@@ -267,6 +270,13 @@ def submit_w_callbacks(func=nap_and_dream, params=urls):
             future.add_done_callback(callback)
             future.add_done_callback(callbackk)
 
+        # for debugging
+        for future in cute.as_completed():
+            yield future
+
 
 if __name__ == '__main__':
-    submit_w_callbacks()
+    for future in submit_wait_as_completed():
+        data, url = future.result()
+        if data is not None:
+            logger.info(f'data read in successfully for url: {url}')
